@@ -7,7 +7,7 @@ import (
 type Item struct {
 	ID          string      `json:"id"`
 	Content     string      `json:"content"`
-	ContentType ContentType `json:"content_type"`
+	Type        ContentType `json:"type"`
 	Fingerprint string      `json:"fingerprint"`
 
 	CreatedAt  time.Time `json:"created_at"`
