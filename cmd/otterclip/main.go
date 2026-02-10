@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -62,7 +63,7 @@ func main() {
 
 	fmt.Println("OtterClip (dev mode)")
 	fmt.Println("DB:", *dbPath)
-	fmt.Println("Commands: add <text> | paste | list | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
+	fmt.Println("Commands: add <text> | paste | list | query <text> | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
 	fmt.Println("Tip: 'paste' lets you type/paste a full line, then hit Enter.")
 	fmt.Println("Tip: run with --watch to capture the real clipboard (macOS only for now).")
 
@@ -86,7 +87,7 @@ func main() {
 			return
 
 		case "help":
-			fmt.Println("Commands: add <text> | paste | list | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
+			fmt.Println("Commands: add <text> | paste | list | query <text> | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
 
 		case "pause":
 			paused = true
@@ -125,17 +126,23 @@ func main() {
 				fmt.Println("error:", err)
 				continue
 			}
-			if len(items) == 0 {
-				fmt.Println("(empty)")
+			printItems(items)
+
+		case "query", "q":
+			if arg == "" {
+				fmt.Println("usage: query <text>")
 				continue
 			}
-			for i, it := range items {
-				pin := " "
-				if it.Pinned {
-					pin = "★"
-				}
-				fmt.Printf("%2d %s [%s] %s\n", i+1, pin, it.Type, preview(it.Content, 80))
+			results, err := queryItems(ctx, store, arg, 80, 20) // scan 80, show top 20
+			if err != nil {
+				fmt.Println("error:", err)
+				continue
 			}
+			if len(results) == 0 {
+				fmt.Println("(no matches)")
+				continue
+			}
+			printItems(results)
 
 		case "count":
 			n, err := store.Count(ctx)
@@ -177,12 +184,26 @@ func main() {
 
 		default:
 			fmt.Println("unknown command:", cmd)
-			fmt.Println("Commands: add <text> | paste | list | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
+			fmt.Println("Commands: add <text> | paste | list | query <text> | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
 		}
 	}
 
 	if err := sc.Err(); err != nil {
 		fmt.Fprintln(os.Stderr, "stdin error:", err)
+	}
+}
+
+func printItems(items []core.Item) {
+	if len(items) == 0 {
+		fmt.Println("(empty)")
+		return
+	}
+	for i, it := range items {
+		pin := " "
+		if it.Pinned {
+			pin = "★"
+		}
+		fmt.Printf("%2d %s [%s] %s\n", i+1, pin, it.Type, preview(it.Content, 80))
 	}
 }
 
@@ -248,6 +269,100 @@ func deleteByIndex(ctx context.Context, st pinStore, n int) error {
 		return fmt.Errorf("refusing to delete pinned item (unpin first)")
 	}
 	return st.Delete(ctx, it.ID)
+}
+
+func queryItems(ctx context.Context, st interface {
+	ListRecent(ctx context.Context, limit int) ([]core.Item, error)
+}, q string, scanLimit int, outLimit int) ([]core.Item, error) {
+	items, err := st.ListRecent(ctx, scanLimit)
+	if err != nil {
+		return nil, err
+	}
+
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return nil, nil
+	}
+
+	type scored struct {
+		it    core.Item
+		score int
+	}
+
+	scoredItems := make([]scored, 0, len(items))
+	now := time.Now()
+
+	for _, it := range items {
+		s := strings.ToLower(it.Content)
+
+		matchScore := scoreMatch(s, q)
+		if matchScore == 0 {
+			continue
+		}
+
+		score := matchScore
+
+		// pinned boost
+		if it.Pinned {
+			score += 5000
+		}
+
+		// recency boost (newer = higher)
+		age := now.Sub(it.LastSeenAt)
+		switch {
+		case age < 10*time.Minute:
+			score += 400
+		case age < time.Hour:
+			score += 250
+		case age < 24*time.Hour:
+			score += 120
+		case age < 7*24*time.Hour:
+			score += 40
+		}
+
+		scoredItems = append(scoredItems, scored{it: it, score: score})
+	}
+
+	sort.Slice(scoredItems, func(i, j int) bool {
+		if scoredItems[i].score != scoredItems[j].score {
+			return scoredItems[i].score > scoredItems[j].score
+		}
+		return scoredItems[i].it.LastSeenAt.After(scoredItems[j].it.LastSeenAt)
+	})
+
+	if outLimit <= 0 || outLimit > len(scoredItems) {
+		outLimit = len(scoredItems)
+	}
+
+	out := make([]core.Item, 0, outLimit)
+	for i := 0; i < outLimit; i++ {
+		out = append(out, scoredItems[i].it)
+	}
+	return out, nil
+}
+
+func scoreMatch(s, q string) int {
+	// Basic match:
+	// - exact match strongest
+	// - prefix strong
+	// - substring ok (earlier index slightly better)
+	if s == q {
+		return 3000
+	}
+	if strings.HasPrefix(s, q) {
+		return 2000
+	}
+	if idx := strings.Index(s, q); idx >= 0 {
+		return 1000 + max(0, 200-idx)
+	}
+	return 0
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func splitCmd(s string) (cmd, arg string) {
