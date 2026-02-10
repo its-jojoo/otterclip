@@ -6,7 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/its-jojoo/otterclip/internal/adapter/storage/sqlite"
 	"github.com/its-jojoo/otterclip/internal/core"
@@ -20,6 +23,9 @@ func main() {
 		ignoreCSV    = flag.String("ignore", "password=,token=,apikey=,secret=,authorization: bearer", "comma-separated ignore patterns (substring match)")
 		useRegex     = flag.Bool("ignore-regex", false, "treat ignore patterns as regex")
 		dedupeConsec = flag.Bool("dedupe-consecutive", true, "dedupe consecutive items")
+
+		watch    = flag.Bool("watch", false, "watch system clipboard and capture automatically (darwin only for now)")
+		interval = flag.Duration("interval", 350*time.Millisecond, "clipboard polling interval (darwin)")
 	)
 	flag.Parse()
 
@@ -43,12 +49,22 @@ func main() {
 		DedupeConsecutive: *dedupeConsec,
 	})
 
-	ctx := context.Background()
+	// Cancelable context (Ctrl+C friendly)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if *watch {
+		fmt.Println("OtterClip (watch mode)")
+		fmt.Println("DB:", *dbPath)
+		runWatchMode(ctx, svc, *interval) // implemented via build tags
+		return
+	}
 
 	fmt.Println("OtterClip (dev mode)")
 	fmt.Println("DB:", *dbPath)
 	fmt.Println("Commands: add <text> | paste | list | count | pause | resume | quit")
 	fmt.Println("Tip: 'paste' lets you type/paste a full line, then hit Enter.")
+	fmt.Println("Tip: run with --watch to capture the real clipboard (macOS only for now).")
 
 	paused := false
 	sc := bufio.NewScanner(os.Stdin)
