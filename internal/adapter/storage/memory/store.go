@@ -17,13 +17,16 @@ type Store struct {
 	now  func() time.Time
 	seq  int
 	byID map[string]core.Item
-	list []string // newest first
+
+	fpToID map[string]string
+	list   []string
 }
 
 func New() *Store {
 	return &Store{
-		now:  time.Now,
-		byID: make(map[string]core.Item),
+		now:    time.Now,
+		byID:   make(map[string]core.Item),
+		fpToID: make(map[string]string),
 	}
 }
 
@@ -40,20 +43,41 @@ func (s *Store) Put(ctx context.Context, item core.Item, mode storage.PutMode) e
 		item.ID = "mem-" + itoa(s.seq)
 	}
 
-	// merge updates LastSeenAt if already exists
+	// Upsert by fingerprint (match sqlite behavior)
+	if mode == storage.PutInsert && item.Fingerprint != "" {
+		if existingID, ok := s.fpToID[item.Fingerprint]; ok {
+			existing := s.byID[existingID]
+			existing.Content = item.Content
+			existing.Type = item.Type
+			existing.LastSeenAt = item.LastSeenAt
+			existing.Fingerprint = item.Fingerprint
+			// keep existing.CreatedAt and existing.Pinned
+			s.byID[existingID] = existing
+
+			s.moveToFront(existingID)
+			return nil
+		}
+	}
+
+	// Merge by ID (used by callers that explicitly want to update an existing row)
 	if mode == storage.PutMerge {
 		if existing, ok := s.byID[item.ID]; ok {
 			existing.LastSeenAt = item.LastSeenAt
 			existing.Content = item.Content
 			existing.Type = item.Type
 			existing.Fingerprint = item.Fingerprint
+			// keep existing.CreatedAt and existing.Pinned
 			s.byID[item.ID] = existing
+			s.moveToFront(item.ID)
 			return nil
 		}
 	}
 
-	// insert
+	// Insert new
 	s.byID[item.ID] = item
+	if item.Fingerprint != "" {
+		s.fpToID[item.Fingerprint] = item.ID
+	}
 	s.list = append([]string{item.ID}, s.list...)
 	return nil
 }
@@ -97,8 +121,15 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.byID[id]; !ok {
+	it, ok := s.byID[id]
+	if !ok {
 		return ErrNotFound
+	}
+
+	if it.Fingerprint != "" {
+		if cur, ok := s.fpToID[it.Fingerprint]; ok && cur == id {
+			delete(s.fpToID, it.Fingerprint)
+		}
 	}
 	delete(s.byID, id)
 
@@ -117,6 +148,16 @@ func (s *Store) Count(ctx context.Context) (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.byID), nil
+}
+
+func (s *Store) moveToFront(id string) {
+	for i := range s.list {
+		if s.list[i] == id {
+			copy(s.list[1:i+1], s.list[0:i])
+			s.list[0] = id
+			return
+		}
+	}
 }
 
 // tiny int->string without strconv import (keeps file minimal)

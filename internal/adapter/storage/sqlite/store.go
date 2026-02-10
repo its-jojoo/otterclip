@@ -54,9 +54,23 @@ CREATE TABLE IF NOT EXISTS items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_items_created_at ON items(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_items_last_seen ON items(last_seen_at DESC);
-CREATE INDEX IF NOT EXISTS idx_items_pinned    ON items(pinned DESC);
-CREATE INDEX IF NOT EXISTS idx_items_fp        ON items(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_items_last_seen  ON items(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_items_pinned     ON items(pinned DESC);
+
+-- One-time cleanup: keep the newest row per fingerprint (by last_seen_at).
+-- (Note: if an older duplicate was pinned, this simple cleanup may drop it.)
+DELETE FROM items
+WHERE id NOT IN (
+  SELECT id FROM (
+    SELECT id
+    FROM items
+    ORDER BY last_seen_at DESC
+  )
+  GROUP BY fingerprint
+);
+
+-- Enforce global dedupe
+CREATE UNIQUE INDEX IF NOT EXISTS uq_items_fingerprint ON items(fingerprint);
 `)
 	return err
 }
@@ -68,12 +82,23 @@ func (s *Store) Put(ctx context.Context, item core.Item, mode storage.PutMode) e
 	if item.Content == "" {
 		return errors.New("empty content")
 	}
+	if item.Fingerprint == "" {
+		return errors.New("fingerprint required")
+	}
 
 	switch mode {
 	case storage.PutInsert:
+		// Upsert by fingerprint:
+		// - If it's new: insert.
+		// - If it already exists: update content/type/last_seen_at.
+		//   Preserve created_at and pinned from the existing row.
 		_, err := s.db.ExecContext(ctx, `
 INSERT INTO items(id, content, type, fingerprint, created_at, last_seen_at, pinned)
 VALUES(?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(fingerprint) DO UPDATE SET
+  content=excluded.content,
+  type=excluded.type,
+  last_seen_at=excluded.last_seen_at
 `, item.ID, item.Content, string(item.Type), item.Fingerprint,
 			item.CreatedAt.UnixMilli(), item.LastSeenAt.UnixMilli(), boolToInt(item.Pinned))
 		return err
