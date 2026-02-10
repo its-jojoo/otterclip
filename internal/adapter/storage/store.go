@@ -11,7 +11,7 @@ type PutMode int
 
 const (
 	PutInsert PutMode = iota
-	PutMerge // used when dedupe wants to update LastSeenAt
+	PutMerge          // used when dedupe wants to update LastSeenAt
 )
 
 type Store interface {
