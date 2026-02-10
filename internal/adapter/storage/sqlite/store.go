@@ -57,16 +57,17 @@ CREATE INDEX IF NOT EXISTS idx_items_created_at ON items(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_items_last_seen  ON items(last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_items_pinned     ON items(pinned DESC);
 
--- One-time cleanup: keep the newest row per fingerprint (by last_seen_at).
--- (Note: if an older duplicate was pinned, this simple cleanup may drop it.)
+-- One-time cleanup: remove duplicates, keep the newest row per fingerprint.
+-- Uses window functions (ROW_NUMBER).
 DELETE FROM items
-WHERE id NOT IN (
+WHERE id IN (
   SELECT id FROM (
-    SELECT id
+    SELECT
+      id,
+      ROW_NUMBER() OVER (PARTITION BY fingerprint ORDER BY last_seen_at DESC) AS rn
     FROM items
-    ORDER BY last_seen_at DESC
   )
-  GROUP BY fingerprint
+  WHERE rn > 1
 );
 
 -- Enforce global dedupe
@@ -89,9 +90,8 @@ func (s *Store) Put(ctx context.Context, item core.Item, mode storage.PutMode) e
 	switch mode {
 	case storage.PutInsert:
 		// Upsert by fingerprint:
-		// - If it's new: insert.
-		// - If it already exists: update content/type/last_seen_at.
-		//   Preserve created_at and pinned from the existing row.
+		// - If new: insert.
+		// - If exists: update content/type/last_seen_at, preserve created_at and pinned.
 		_, err := s.db.ExecContext(ctx, `
 INSERT INTO items(id, content, type, fingerprint, created_at, last_seen_at, pinned)
 VALUES(?, ?, ?, ?, ?, ?, ?)
@@ -104,7 +104,6 @@ ON CONFLICT(fingerprint) DO UPDATE SET
 		return err
 
 	case storage.PutMerge:
-		// Update last_seen_at + content/type/fingerprint (keep pinned)
 		_, err := s.db.ExecContext(ctx, `
 UPDATE items
 SET content=?, type=?, fingerprint=?, last_seen_at=?
