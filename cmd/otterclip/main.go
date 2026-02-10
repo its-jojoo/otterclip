@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/its-jojoo/otterclip/internal/adapter/storage/sqlite"
 	"github.com/its-jojoo/otterclip/internal/core"
 	"github.com/its-jojoo/otterclip/internal/usecase/capture"
+	"github.com/its-jojoo/otterclip/internal/usecase/search"
 )
 
 func main() {
@@ -45,10 +45,11 @@ func main() {
 	}
 	defer store.Close()
 
-	svc := capture.New(store, pf, capture.Config{
+	captureSvc := capture.New(store, pf, capture.Config{
 		MaxItems:          *maxItems,
 		DedupeConsecutive: *dedupeConsec,
 	})
+	searchSvc := search.New(store)
 
 	// Cancelable context (Ctrl+C friendly)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -57,7 +58,7 @@ func main() {
 	if *watch {
 		fmt.Println("OtterClip (watch mode)")
 		fmt.Println("DB:", *dbPath)
-		runWatchMode(ctx, svc, *interval) // implemented via build tags
+		runWatchMode(ctx, captureSvc, *interval) // implemented via build tags
 		return
 	}
 
@@ -106,7 +107,7 @@ func main() {
 				fmt.Println("usage: add <text>")
 				continue
 			}
-			saveOne(ctx, svc, arg)
+			saveOne(ctx, captureSvc, arg)
 
 		case "paste":
 			if paused {
@@ -118,7 +119,7 @@ func main() {
 				return
 			}
 			txt := sc.Text()
-			saveOne(ctx, svc, txt)
+			saveOne(ctx, captureSvc, txt)
 
 		case "list":
 			items, err := store.ListRecent(ctx, 20)
@@ -150,7 +151,7 @@ func main() {
 				fmt.Println("usage: query <text>")
 				continue
 			}
-			results, err := queryItems(ctx, store, arg, 80, 20) // scan 80, show top 20
+			results, err := searchSvc.Query(ctx, arg, search.Options{ScanLimit: 80, OutLimit: 20})
 			if err != nil {
 				fmt.Println("error:", err)
 				continue
@@ -286,96 +287,6 @@ func deleteByIndex(ctx context.Context, st pinStore, n int) error {
 		return fmt.Errorf("refusing to delete pinned item (unpin first)")
 	}
 	return st.Delete(ctx, it.ID)
-}
-
-func queryItems(ctx context.Context, st interface {
-	ListRecent(ctx context.Context, limit int) ([]core.Item, error)
-}, q string, scanLimit int, outLimit int) ([]core.Item, error) {
-	items, err := st.ListRecent(ctx, scanLimit)
-	if err != nil {
-		return nil, err
-	}
-
-	q = strings.ToLower(strings.TrimSpace(q))
-	if q == "" {
-		return nil, nil
-	}
-
-	type scored struct {
-		it    core.Item
-		score int
-	}
-
-	scoredItems := make([]scored, 0, len(items))
-	now := time.Now()
-
-	for _, it := range items {
-		s := strings.ToLower(it.Content)
-
-		matchScore := scoreMatch(s, q)
-		if matchScore == 0 {
-			continue
-		}
-
-		score := matchScore
-
-		// pinned boost
-		if it.Pinned {
-			score += 5000
-		}
-
-		// recency boost (newer = higher)
-		age := now.Sub(it.LastSeenAt)
-		switch {
-		case age < 10*time.Minute:
-			score += 400
-		case age < time.Hour:
-			score += 250
-		case age < 24*time.Hour:
-			score += 120
-		case age < 7*24*time.Hour:
-			score += 40
-		}
-
-		scoredItems = append(scoredItems, scored{it: it, score: score})
-	}
-
-	sort.Slice(scoredItems, func(i, j int) bool {
-		if scoredItems[i].score != scoredItems[j].score {
-			return scoredItems[i].score > scoredItems[j].score
-		}
-		return scoredItems[i].it.LastSeenAt.After(scoredItems[j].it.LastSeenAt)
-	})
-
-	if outLimit <= 0 || outLimit > len(scoredItems) {
-		outLimit = len(scoredItems)
-	}
-
-	out := make([]core.Item, 0, outLimit)
-	for i := 0; i < outLimit; i++ {
-		out = append(out, scoredItems[i].it)
-	}
-	return out, nil
-}
-
-func scoreMatch(s, q string) int {
-	if s == q {
-		return 3000
-	}
-	if strings.HasPrefix(s, q) {
-		return 2000
-	}
-	if idx := strings.Index(s, q); idx >= 0 {
-		return 1000 + max(0, 200-idx)
-	}
-	return 0
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func splitCmd(s string) (cmd, arg string) {
