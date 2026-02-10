@@ -63,7 +63,7 @@ func main() {
 
 	fmt.Println("OtterClip (dev mode)")
 	fmt.Println("DB:", *dbPath)
-	fmt.Println("Commands: add <text> | paste | list | query <text> | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
+	fmt.Println("Commands: add <text> | paste | list | pins | query <text> | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
 	fmt.Println("Tip: 'paste' lets you type/paste a full line, then hit Enter.")
 	fmt.Println("Tip: run with --watch to capture the real clipboard (macOS only for now).")
 
@@ -87,7 +87,7 @@ func main() {
 			return
 
 		case "help":
-			fmt.Println("Commands: add <text> | paste | list | query <text> | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
+			fmt.Println("Commands: add <text> | paste | list | pins | query <text> | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
 
 		case "pause":
 			paused = true
@@ -127,6 +127,23 @@ func main() {
 				continue
 			}
 			printItems(items)
+
+		case "pins":
+			items, err := store.ListRecent(ctx, 200) // scan more, then filter
+			if err != nil {
+				fmt.Println("error:", err)
+				continue
+			}
+			pinned := make([]core.Item, 0, 50)
+			for _, it := range items {
+				if it.Pinned {
+					pinned = append(pinned, it)
+					if len(pinned) >= 50 {
+						break
+					}
+				}
+			}
+			printItems(pinned)
 
 		case "query", "q":
 			if arg == "" {
@@ -184,7 +201,7 @@ func main() {
 
 		default:
 			fmt.Println("unknown command:", cmd)
-			fmt.Println("Commands: add <text> | paste | list | query <text> | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
+			fmt.Println("Commands: add <text> | paste | list | pins | query <text> | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
 		}
 	}
 
@@ -342,10 +359,6 @@ func queryItems(ctx context.Context, st interface {
 }
 
 func scoreMatch(s, q string) int {
-	// Basic match:
-	// - exact match strongest
-	// - prefix strong
-	// - substring ok (earlier index slightly better)
 	if s == q {
 		return 3000
 	}
