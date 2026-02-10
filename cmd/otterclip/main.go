@@ -62,7 +62,7 @@ func main() {
 
 	fmt.Println("OtterClip (dev mode)")
 	fmt.Println("DB:", *dbPath)
-	fmt.Println("Commands: add <text> | paste | list | count | pause | resume | quit")
+	fmt.Println("Commands: add <text> | paste | list | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
 	fmt.Println("Tip: 'paste' lets you type/paste a full line, then hit Enter.")
 	fmt.Println("Tip: run with --watch to capture the real clipboard (macOS only for now).")
 
@@ -84,6 +84,9 @@ func main() {
 		switch cmd {
 		case "quit", "exit":
 			return
+
+		case "help":
+			fmt.Println("Commands: add <text> | paste | list | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
 
 		case "pause":
 			paused = true
@@ -142,9 +145,39 @@ func main() {
 			}
 			fmt.Println(n)
 
+		case "pin":
+			n, ok := parseIndex(arg)
+			if !ok {
+				fmt.Println("usage: pin <n>")
+				continue
+			}
+			if err := setPinnedByIndex(ctx, store, n, true); err != nil {
+				fmt.Println("error:", err)
+			}
+
+		case "unpin":
+			n, ok := parseIndex(arg)
+			if !ok {
+				fmt.Println("usage: unpin <n>")
+				continue
+			}
+			if err := setPinnedByIndex(ctx, store, n, false); err != nil {
+				fmt.Println("error:", err)
+			}
+
+		case "del":
+			n, ok := parseIndex(arg)
+			if !ok {
+				fmt.Println("usage: del <n>")
+				continue
+			}
+			if err := deleteByIndex(ctx, store, n); err != nil {
+				fmt.Println("error:", err)
+			}
+
 		default:
 			fmt.Println("unknown command:", cmd)
-			fmt.Println("Commands: add <text> | paste | list | count | pause | resume | quit")
+			fmt.Println("Commands: add <text> | paste | list | count | pin <n> | unpin <n> | del <n> | pause | resume | help | quit")
 		}
 	}
 
@@ -164,6 +197,57 @@ func saveOne(ctx context.Context, svc *capture.Service, raw string) {
 		return
 	}
 	fmt.Println("saved")
+}
+
+func parseIndex(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		n = n*10 + int(r-'0')
+	}
+	if n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+type pinStore interface {
+	ListRecent(ctx context.Context, limit int) ([]core.Item, error)
+	SetPinned(ctx context.Context, id string, pinned bool) error
+	Delete(ctx context.Context, id string) error
+}
+
+func setPinnedByIndex(ctx context.Context, st pinStore, n int, pinned bool) error {
+	items, err := st.ListRecent(ctx, 50)
+	if err != nil {
+		return err
+	}
+	if n > len(items) {
+		return fmt.Errorf("index out of range (have %d)", len(items))
+	}
+	it := items[n-1]
+	return st.SetPinned(ctx, it.ID, pinned)
+}
+
+func deleteByIndex(ctx context.Context, st pinStore, n int) error {
+	items, err := st.ListRecent(ctx, 50)
+	if err != nil {
+		return err
+	}
+	if n > len(items) {
+		return fmt.Errorf("index out of range (have %d)", len(items))
+	}
+	it := items[n-1]
+	if it.Pinned {
+		return fmt.Errorf("refusing to delete pinned item (unpin first)")
+	}
+	return st.Delete(ctx, it.ID)
 }
 
 func splitCmd(s string) (cmd, arg string) {
