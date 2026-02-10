@@ -3,6 +3,7 @@ package capture
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/its-jojoo/otterclip/internal/adapter/storage"
 	"github.com/its-jojoo/otterclip/internal/core"
 )
@@ -50,6 +51,7 @@ func (s *Service) ProcessText(ctx context.Context, raw string) (*core.Item, bool
 
 	now := s.store.Now()
 	item := core.Item{
+		ID:          uuid.NewString(),
 		Content:     normalized,
 		Type:        core.DetectType(normalized),
 		Fingerprint: fp,

@@ -8,13 +8,14 @@ import (
 	"os"
 	"strings"
 
-	"github.com/its-jojoo/otterclip/internal/adapter/storage/memory"
+	"github.com/its-jojoo/otterclip/internal/adapter/storage/sqlite"
 	"github.com/its-jojoo/otterclip/internal/core"
 	"github.com/its-jojoo/otterclip/internal/usecase/capture"
 )
 
 func main() {
 	var (
+		dbPath       = flag.String("db", "./otterclip.dev.db", "sqlite db path")
 		maxItems     = flag.Int("max-items", 5000, "max clipboard history items")
 		ignoreCSV    = flag.String("ignore", "password=,token=,apikey=,secret=,authorization: bearer", "comma-separated ignore patterns (substring match)")
 		useRegex     = flag.Bool("ignore-regex", false, "treat ignore patterns as regex")
@@ -30,7 +31,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	store := memory.New()
+	store, err := sqlite.Open(*dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "db open error: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
 	svc := capture.New(store, pf, capture.Config{
 		MaxItems:          *maxItems,
 		DedupeConsecutive: *dedupeConsec,
@@ -39,6 +46,7 @@ func main() {
 	ctx := context.Background()
 
 	fmt.Println("OtterClip (dev mode)")
+	fmt.Println("DB:", *dbPath)
 	fmt.Println("Commands: add <text> | paste | list | count | pause | resume | quit")
 	fmt.Println("Tip: 'paste' lets you type/paste a full line, then hit Enter.")
 
