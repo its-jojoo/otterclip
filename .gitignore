@@ -36,3 +36,8 @@ Thumbs.db
 # Env files
 .env
 .env.*
+
+# Wails
+build/
+ui/node_modules/
+ui/dist/
